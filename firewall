@@ -1,0 +1,131 @@
+#!/bin/bash
+### BEGIN INIT INFO
+# Provides:          firewall
+# Required-Start:    $local_fs $network
+# Required-Stop:     $local_fs $network
+# Default-Start:     2 3 4 5
+# Default-Stop:      0 1 6
+# X-Interactive:     false
+# Short-Description: Filter UDP/TCP PORTS + VPN
+### END INIT INFO
+
+#---- VARIABLES ----#
+
+IPT=$(which iptables)
+IPS=$(which ipset)
+
+VPN_INTERFACE=enp1s0
+VPN_NET=X.X.X.X/X   # CIDR
+VPN_PROTO=X         # udp/tcp
+VPN_PORT=1194       # PORT NUMBER
+
+#---- FUNCTION ----#
+
+reset_iptables() {
+	echo "Reseting IPTABLES ..."
+	
+	# Wipe
+	$IPT -F
+	$IPT -X
+	echo "IPTables wiped"
+
+	# On bloque tout
+	$IPT -P INPUT DROP
+	$IPT -P FORWARD DROP
+	$IPT -P OUTPUT ACCEPT
+	echo "DROP on all filters"
+
+	# Ne pas casser les connexions établies
+	$IPT -A INPUT -m state --state RELATED,ESTABLISHED -j ACCEPT
+	#$IPT -A OUTPUT -m state --state NEW,RELATED,ESTABLISHED,INVALID -j ACCEPT
+	echo "Prevents broken established connections"
+
+	# Autorise le loopback (127.0.0.1)
+	$IPT -A INPUT -i lo -j ACCEPT
+	echo "Loopback allowed"
+	# ICMP (le ping)
+	$IPT -A INPUT -p icmp -j ACCEPT
+	echo "Ping allowed"
+	
+	security_rules
+}
+
+security_rules() {
+	echo "Adding security rules"
+	$IPT -A INPUT -p udp --sport 65535 --dport 1024:65353 -j DROP
+}
+
+open_port() {
+	local PROTOCOL=$1
+	local PORT=$2
+
+	CMD='$IPT -A INPUT -p $PROTOCOL --dport $PORT -j ACCEPT'
+	eval $CMD
+}
+
+#---- RUNNING ----#
+
+# Reset IPTables i/o=drop & security rules
+reset_iptables
+
+echo -e "\n[SERVICES]"
+
+#---- USUAL PORTS ----#
+
+# SSH
+open_port tcp 22
+
+# DNS
+open_port tcp 53
+open_port udp 53
+
+# HTTP + HTTPS
+open_port tcp 80
+open_port udp 80
+
+# FTP
+#open_port tcp 20
+#open_port tcp 21
+# imodprobe ip_conntrack_ftp # optional command for OVH servers
+
+#---- VPN ----#
+$IPT -A INPUT -i $VPN_INTERFACE -m state --state NEW -p $VPN_PROTO --dport $VPN_PORT -j ACCEPT
+# Allow TUN interface connections to OpenVPN server
+$IPT -A INPUT -i tun+ -j ACCEPT
+
+# Allow TUN interface connections to be forwarded through other interfaces
+$IPT -A FORWARD -i tun+ -j ACCEPT
+$IPT -A FORWARD -i tun+ -o $VPN_INTERFACE -m state --state RELATED,ESTABLISHED -j ACCEPT
+$IPT -A FORWARD -i $VPN_INTERFACE -o tun+ -m state --state RELATED,ESTABLISHED -j ACCEPT
+# NAT the VPN client traffic to the internet
+$IPT -t nat -A POSTROUTING -s $VPN_NET -o $VPN_INTERFACE -j MASQUERADE
+
+#---- ADDITIONAL PORTS ----#
+
+# Monit
+#$IPT -A INPUT -i tun -p tcp --dport 5000 -j ACCEPT
+
+# GIT
+#open_port tcp 9418
+
+# Subsonic
+#open_port tcp 4040
+
+# Deluge
+#open_port tcp 8112
+
+# Syncthing
+#open_port tcp 8384
+#open_port tcp 22000
+#open_port udp 21025
+#open_port udp 21026
+
+# STEAM
+#open_port udp 27000:27015
+#open_port tcp 27020:27039
+#open_port udp 27015:27050
+#open_port tcp 27017
+#open_port udp 26901
+#$IPT -A INPUT -p udp -m udp --sport 27000:27030 --dport 1025:65355 -j ACCEPT
+#$IPT -A INPUT -p udp -m udp --sport 4380 --dport 1025:65355 -j ACCEPT
+#open_port INPUT tcp 27015
