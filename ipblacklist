@@ -1,0 +1,134 @@
+#!/bin/bash
+### BEGIN INIT INFO
+# Provides: IPBlacklist
+# Required-Start: $local_fs $network
+# Required-Stop: $all
+# Default-Start: 2 3 4 5
+# Default-Stop: 0 1 6
+# Short-Description: Blocks Bad IPs
+# Description: Enable/Disable IP Blacklist
+### END INIT INFO
+
+#---- VARIABLES #####
+
+IPT=$(which iptables)
+IPS=$(which ipset)
+
+NAME="ipblacklist"
+ZONEROOT="/etc/$NAME/"
+ZONEFILE="$ZONEROOT/iplist.zone"
+
+# Create target directory/file if it doesn't exist
+[ ! -d $ZONEROOT ] && $(which mkdir) -p $ZONEROOT
+[ ! -f $ZONEROOT ] && $(which touch) $ZONEFILE
+
+# Verify if filtration is enabled
+$IPT -C INPUT -j $NAME > /dev/null 2>&1
+ISRUNNING=$?
+
+#---- FUNCTIONS ----#
+
+function stopIPBL {
+	echo "Stopping $NAME ..."
+	# Disable blacklist
+	$IPT -D INPUT -j $NAME > /dev/null 2>&1
+
+	# Clean and Delete the Chain
+	echo "Removing IPTables chain '$NAME' ..."
+	$IPT -F $NAME > /dev/null 2>&1
+	$IPT -X $NAME > /dev/null 2>&1
+
+	echo "Removing IPSet table ..."
+    $IPS -F $NAME > /dev/null 2>&1
+    $IPS -X $NAME > /dev/null 2>&1
+}
+
+#---- RUNNING ----#
+
+case "$1" in
+start|restart) #### START ####
+	if [ "$1" = "start" -a "$ISRUNNING" = "true" ]; then
+		echo "$NAME is already running"
+		exit 1
+	fi
+
+	if [ "$1" = "start" ]; then
+		echo "Starting $NAME ..."
+	elif [ "$1" = "restart" ]; then
+		echo "Restarting $NAME ..."
+		stopIPBL
+	fi
+
+	# Create new Chain
+	$IPT -N $NAME
+
+	# Create new IPset table
+    $IPS -N $NAME hash:net
+
+	# Insert data into IPset table
+	if [ -f $ZONEFILE ]
+	then
+        BADIPS=$(egrep -v "^#|^$" $ZONEFILE)
+        for ipblock in $BADIPS
+        do
+            $IPS -A $NAME $ipblock
+        done
+    fi
+
+	# Enable Filter
+	$IPT -I $NAME -m set --match-set $NAME src -j DROP
+
+	# End of Chain
+	$IPT -A $NAME -j RETURN
+
+	# Enable the chain
+	$IPT -I INPUT -j $NAME
+;;
+reload) #### RELOAD ####
+	if [ ! "$ISRUNNING" = 0 ]; then
+		echo "$NAME is not running"
+		exit 1
+	else
+		echo "Reloading $NAME ..."
+
+		# Disable Filter
+		$IPT -D $NAME -m set --match-set $NAME src -j DROP > /dev/null 2>&1
+
+		# Clean IPSet Table
+		$IPS -F $NAME > /dev/null 2>&1
+
+		# Inset data into IPset table
+		if [ -f $ZONEFILE ]
+		then
+			BADIPS=$(egrep -v "^#|^$" $ZONEFILE)
+			for ipblock in $BADIPS
+			do
+				$IPS -A $NAME $ipblock
+			done
+		fi
+
+		# Enable Filter
+		$IPT -I $NAME -m set --match-set $NAME src -j DROP
+	fi
+;;
+stop) #### STOP ####
+	stopIPBL
+;;
+status) #### STATUS ####
+	if [ "$ISRUNNING" = 0 ]; then
+		echo "$NAME is running";
+	else
+		echo "$NAME is stopped";
+	fi
+	exit 0
+;;
+*)
+	N=/etc/init.d/$NAME
+	echo "Usage: $N {start|stop|restart|reload|status}" >&2
+exit 1
+;;
+esac
+
+echo ""
+exit 0
+
